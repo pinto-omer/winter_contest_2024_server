@@ -4,6 +4,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::task;
+use tokio::time::error::Elapsed;
+use tokio::time::timeout;
 
 mod networking;
 
@@ -17,18 +19,20 @@ pub async fn test_server() -> std::io::Result<()> {
     let tcp_handle = task::spawn(async move {
         loop {
             let state = clone_state.clone();
-            if let Ok((socket, addr)) = tcp_listener.accept().await {
+            if let Ok((mut socket, addr)) = tcp_listener.accept().await {
                 task::spawn(async move {
                     if state.can_accept_new_client() {
                         let mut id = 0;
                         while state.check_client_exists(id) {
                             id += 1;
                         }
-                        state.add_client(id, Client::new(id, addr, std::time::Instant::now()));
+
+                        let client = Client::new(id, addr, std::time::Instant::now());
+                        let key = String::from(client.get_key());
+                        state.add_client(id, client);
                         println!("Accepted connection from {}", addr);
                         let _ = socket.writable().await;
-                        let mut key = String::from("client");
-                        key.push_str(&id.to_string()[..]);
+
                         println!("key as bytes:{:?}", key.as_bytes());
                         match socket.try_write(key.as_bytes()) {
                             Ok(_) => {}
@@ -38,7 +42,7 @@ pub async fn test_server() -> std::io::Result<()> {
                             }
                         }
                         // Handle TCP communication here
-                        handle_tcp_client(socket, id, state).await;
+                        handle_tcp_client(&mut socket, id, state).await;
                     } else {
                         println!("Rejected connection from {} (server full)", addr);
                         // Optionally send a rejection message
@@ -65,7 +69,7 @@ pub async fn test_server() -> std::io::Result<()> {
 }
 
 async fn handle_tcp_client(
-    socket: TcpStream,
+    socket: &mut TcpStream,
     id: u32,
     state: Arc<ServerState>,
 ) -> Result<(), Box<dyn Error>> {
@@ -73,15 +77,26 @@ async fn handle_tcp_client(
     println!("Handling TCP client ID {}", id);
 
     loop {
-        let ready = socket.readable().await?;
+        let ready = match timeout(std::time::Duration::from_secs(20), socket.readable()).await {
+            Ok(val) => val,
+            Err(e) => {
+                println!("session timed out");
+                let _ = socket.shutdown().await;
+                state.remove_client(id);
+                return Err(e.into());
+            }
+        };
 
         let mut buf = vec![0; 1024];
 
         match socket.try_read(&mut buf) {
             Ok(n) => {
                 if n > 0 {
-                    println!("read {} bytes", n);
-                    println!("received data: {:#?}", String::from_utf8_lossy(&buf[..n]));
+                    println!("TCP({id}): read {} bytes", n);
+                    println!(
+                        "TCP({id}): received data: {:#?}",
+                        String::from_utf8_lossy(&buf[..n])
+                    );
                 } else {
                     println!("connection closed");
                     state.remove_client(id);
@@ -96,9 +111,6 @@ async fn handle_tcp_client(
             }
         }
     }
-    //std::thread::sleep(std::time::Duration::from_secs(10));
-    // On disconnect or client removal
-    //state.remove_client(id);
 }
 
 async fn handle_udp(socket: UdpSocket, state: Arc<ServerState>) {

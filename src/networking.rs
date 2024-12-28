@@ -6,6 +6,7 @@ pub struct Client {
     id: u32,
     address: SocketAddr,
     last_heartbeat: std::time::Instant,
+    key: String,
 }
 
 pub struct ServerState {
@@ -64,10 +65,16 @@ impl ServerState {
 
 impl Client {
     pub fn new(id: u32, address: SocketAddr, last_heartbeat: std::time::Instant) -> Self {
+        let mut key = String::from("client");
+        key.push_str(&id.to_string()[..]);
         Client {
             id,
             address,
             last_heartbeat,
+            key,
         }
+    }
+    pub fn get_key(&self) -> &str {
+        &self.key[..]
     }
 }
