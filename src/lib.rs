@@ -1,14 +1,13 @@
 use networking::{Client, ServerState};
 use std::error::Error;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::task;
-use tokio::time::error::Elapsed;
 use tokio::time::timeout;
 
+mod game_components;
 mod networking;
-
 pub async fn test_server() -> std::io::Result<()> {
     let tcp_listener = TcpListener::bind("127.0.0.1:8080").await?;
     let server_state = Arc::new(networking::ServerState::new(8));
@@ -42,7 +41,7 @@ pub async fn test_server() -> std::io::Result<()> {
                             }
                         }
                         // Handle TCP communication here
-                        handle_tcp_client(&mut socket, id, state).await;
+                        let _thread_error = handle_tcp_client(&mut socket, id, state).await;
                     } else {
                         println!("Rejected connection from {} (server full)", addr);
                         // Optionally send a rejection message
@@ -77,7 +76,7 @@ async fn handle_tcp_client(
     println!("Handling TCP client ID {}", id);
 
     loop {
-        let ready = match timeout(std::time::Duration::from_secs(20), socket.readable()).await {
+        match timeout(std::time::Duration::from_secs(20), socket.readable()).await {
             Ok(val) => val,
             Err(e) => {
                 println!("session timed out");
@@ -85,7 +84,7 @@ async fn handle_tcp_client(
                 state.remove_client(id);
                 return Err(e.into());
             }
-        };
+        }?;
 
         let mut buf = vec![0; 1024];
 
@@ -107,6 +106,11 @@ async fn handle_tcp_client(
                 continue;
             }
             Err(e) => {
+                println!(
+                    "TCP: received the following error from client {id}: {}",
+                    e.to_string()
+                );
+                state.remove_client(id);
                 return Err(e.into());
             }
         }
@@ -117,12 +121,16 @@ async fn handle_udp(socket: UdpSocket, state: Arc<ServerState>) {
     let mut buf = [0; 1024];
 
     loop {
-        if let Ok((size, addr)) = socket.recv_from(&mut buf).await {
+        if let Ok((_size, addr)) = socket.recv_from(&mut buf).await {
             println!("UDP Packet received from {}", addr);
-            if let Some(id) = state.get_client_id_by_addr(addr) {
+            let key = String::from_utf8_lossy(&buf[..7]);
+            if let Some(id) = state.get_client_id_by_key(&key) {
                 // Handle existing client packet
-                println!(", ID:{}", id);
-                println!("Packet data: {:#?}", buf);
+                println!(
+                    "UDP({id}): Key Data: {key} Packet raw data: {:?}",
+                    &buf[7..]
+                );
+                state.client_heartbeat(id);
             }
         }
     }
@@ -130,7 +138,7 @@ async fn handle_udp(socket: UdpSocket, state: Arc<ServerState>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    //use super::*;
 
     // #[test]
     // fn it_works() {

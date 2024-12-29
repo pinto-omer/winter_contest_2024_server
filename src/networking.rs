@@ -1,12 +1,17 @@
+use crate::game_components::Float3;
+
+use super::game_components::Entity;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
 pub struct Client {
     id: u32,
-    address: SocketAddr,
+    _address: SocketAddr,
     last_heartbeat: std::time::Instant,
     key: String,
+    player: Entity,
 }
 
 pub struct ServerState {
@@ -36,12 +41,12 @@ impl ServerState {
         }
     }
 
-    pub fn get_client_id_by_addr(&self, addr: SocketAddr) -> Option<u32> {
+    pub fn get_client_id_by_key(&self, key: &str) -> Option<u32> {
         self.clients
             .lock()
             .unwrap()
             .values()
-            .filter(|c| c.address == addr)
+            .filter(|c| c.key == key)
             .map(|client| client.id)
             .next()
     }
@@ -61,6 +66,29 @@ impl ServerState {
             self.current_connections.fetch_sub(1, Ordering::Relaxed);
         }
     }
+
+    pub fn client_heartbeat(&self, id: u32) {
+        if let Some(client) = self.clients.lock().unwrap().get_mut(&id) {
+            client.update_heartbeat();
+        }
+    }
+
+    pub fn get_client_player(&self, id: u32) -> Option<Entity> {
+        if let Some(client) = self.clients.lock().unwrap().get_mut(&id) {
+            Some(client.get_player())
+        } else {
+            None
+        }
+    }
+
+    pub fn set_client_player(&self, id: u32, player: Entity) -> bool {
+        if let Some(client) = self.clients.lock().unwrap().get_mut(&id) {
+            client.set_player(player);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Client {
@@ -69,12 +97,31 @@ impl Client {
         key.push_str(&id.to_string()[..]);
         Client {
             id,
-            address,
+            _address: address,
             last_heartbeat,
             key,
+            player: Entity {
+                pos: Float3(0.0, 0.0, 0.0),
+                rot: Float3(0.0, 0.0, 0.0),
+                spd: Float3(0.0, 0.0, 0.0),
+                scl: Float3(1.0, 1.0, 1.0),
+                max_spd: 10.0,
+            },
         }
     }
     pub fn get_key(&self) -> &str {
         &self.key[..]
+    }
+
+    fn update_heartbeat(&mut self) {
+        self.last_heartbeat = std::time::Instant::now();
+    }
+
+    fn get_player(&self) -> Entity {
+        self.player
+    }
+
+    fn set_player(&mut self, player: Entity) {
+        self.player = player;
     }
 }
