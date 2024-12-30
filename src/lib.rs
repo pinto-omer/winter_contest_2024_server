@@ -1,3 +1,4 @@
+use game_components::{Entity, Float3};
 use networking::{Client, ServerState};
 use std::error::Error;
 use std::sync::Arc;
@@ -125,17 +126,59 @@ async fn handle_udp(socket: UdpSocket, state: Arc<ServerState>) {
             println!("UDP Packet received from {}", addr);
             let key = String::from_utf8_lossy(&buf[..7]);
             if let Some(id) = state.get_client_id_by_key(&key) {
+                let packet_type = u32::from_le_bytes(buf[7..11].try_into().unwrap());
+                println!("UDP({id}): Key Data: {key}");
+                match packet_type {
+                    1 => {
+                        let player = state.get_client_player(id).unwrap();
+                        let (parsed_key, parsed_entity) =
+                            player_entity_from_le_bytes(&buf[11..], player);
+                        println!(
+                            "Received player packet. parsed key: {parsed_key}, key equals? {:?},\n entity: {:?}",
+                            parsed_key == key,
+                            parsed_entity
+                        );
+
+                        if parsed_key == key {
+                            state.set_client_player(id, parsed_entity);
+                        }
+                    }
+                    _ => {
+                        println!("Unknown packet type. Packet raw data: {:?}", &buf[7..]);
+                    }
+                }
+
                 // Handle existing client packet
-                println!(
-                    "UDP({id}): Key Data: {key} Packet raw data: {:?}",
-                    &buf[7..]
-                );
+
                 state.client_heartbeat(id);
             }
         }
     }
 }
 
+fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity) {
+    let key = String::from_utf8_lossy(&bytes[..7]).try_into().unwrap();
+    let new_player = Entity {
+        pos: Float3(
+            f32::from_le_bytes(bytes[8..12].try_into().unwrap()), // start from 8 to account for 4 byte alignment
+            f32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            f32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+        ),
+        rot: Float3(
+            f32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+            f32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+            f32::from_le_bytes(bytes[28..32].try_into().unwrap()),
+        ),
+        scl: Float3(
+            f32::from_le_bytes(bytes[32..36].try_into().unwrap()),
+            f32::from_le_bytes(bytes[36..40].try_into().unwrap()),
+            f32::from_le_bytes(bytes[40..44].try_into().unwrap()),
+        ),
+        spd: f32::from_le_bytes(bytes[44..48].try_into().unwrap()),
+        max_spd: player.max_spd,
+    };
+    (key, new_player)
+}
 #[cfg(test)]
 mod tests {
     //use super::*;

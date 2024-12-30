@@ -103,7 +103,7 @@ impl Client {
             player: Entity {
                 pos: Float3(0.0, 0.0, 0.0),
                 rot: Float3(0.0, 0.0, 0.0),
-                spd: Float3(0.0, 0.0, 0.0),
+                spd: 0.0,
                 scl: Float3(1.0, 1.0, 1.0),
                 max_spd: 10.0,
             },
