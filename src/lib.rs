@@ -126,18 +126,37 @@ async fn handle_udp(socket: UdpSocket, state: Arc<ServerState>) {
             println!("UDP Packet received from {}", addr);
             let key = String::from_utf8_lossy(&buf[..7]);
             if let Some(id) = state.get_client_id_by_key(&key) {
+                if let Some(address) = state.get_client_udp_addr(id) {
+                    if address != addr {
+                        println!(
+                            "UDP({id}):received address doesn't match saved address: {address}"
+                        );
+                        state.remove_client(id);
+                        break;
+                    }
+                } else {
+                    if !state.set_client_udp_addr(id, addr) {
+                        println!(
+                            "UDP({id}):failed to set client udp address due to mutex acquisition failure"
+                        );
+                        state.remove_client(id);
+                        break;
+                    } else {
+                        println!("UDP({id}):registered client address {addr}");
+                    }
+                }
                 let packet_type = u32::from_le_bytes(buf[7..11].try_into().unwrap());
-                println!("UDP({id}): Key Data: {key}");
+                //println!("UDP({id}): Key Data: {key}");
                 match packet_type {
                     1 => {
                         let player = state.get_client_player(id).unwrap();
                         let (parsed_key, parsed_entity) =
                             player_entity_from_le_bytes(&buf[11..], player);
-                        println!(
-                            "Received player packet. parsed key: {parsed_key}, key equals? {:?},\n entity: {:?}",
-                            parsed_key == key,
-                            parsed_entity
-                        );
+                        //println!(
+                        //    "Received player packet. parsed key: {parsed_key}, key equals? {:?},\n entity: {:?}",
+                        //    parsed_key == key,
+                        //    parsed_entity
+                        //);
 
                         if parsed_key == key {
                             state.set_client_player(id, parsed_entity);

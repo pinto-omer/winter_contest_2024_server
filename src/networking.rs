@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 pub struct Client {
     id: u32,
-    _address: SocketAddr,
+    address: SocketAddr,
+    udp_address: Option<SocketAddr>,
     last_heartbeat: std::time::Instant,
     key: String,
     player: Entity,
@@ -89,6 +90,28 @@ impl ServerState {
             false
         }
     }
+
+    pub fn get_client_udp_addr(&self, id: u32) -> Option<SocketAddr> {
+        self.clients.lock().unwrap().get(&id).unwrap().udp_address
+    }
+
+    pub fn set_client_udp_addr(&self, id: u32, udp_address: SocketAddr) -> bool {
+        match self.clients.lock() {
+            Ok(mut clients) => {
+                let client = clients.get_mut(&id).unwrap();
+                match client.udp_address {
+                    Some(_) => false,
+                    None => {
+                        client.udp_address = Some(udp_address);
+                        true
+                    }
+                }
+            }
+            Err(_) => {
+                panic!("could not acquire lock");
+            }
+        }
+    }
 }
 
 impl Client {
@@ -97,9 +120,10 @@ impl Client {
         key.push_str(&id.to_string()[..]);
         Client {
             id,
-            _address: address,
+            address: address,
             last_heartbeat,
             key,
+            udp_address: None,
             player: Entity {
                 pos: Float3(0.0, 0.0, 0.0),
                 rot: Float3(0.0, 0.0, 0.0),
