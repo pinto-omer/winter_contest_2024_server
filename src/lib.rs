@@ -220,11 +220,12 @@ async fn send_updates(
                         .unwrap()
                         .values()
                         .filter(|client| client.get_key() != key)
-                        .map(|client| client.get_address())
+                        .map(|client| client.get_udp_address())
                         .collect(),
                 )
             }
             for addr in addresses {
+                println!("Sending {:?} to {addr}", player);
                 socket
                     .send_to(&le_bytes_from_player_entity(&key, player), addr)
                     .await?;

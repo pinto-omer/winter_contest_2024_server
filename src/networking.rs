@@ -139,8 +139,10 @@ impl Client {
     pub fn get_key(&self) -> &str {
         &self.key[..]
     }
-    pub fn get_address(&self) -> SocketAddr {
-        self.address.clone()
+    pub fn get_udp_address(&self) -> SocketAddr {
+        self.udp_address
+            .clone()
+            .expect("no udp address was available")
     }
     fn update_heartbeat(&mut self) {
         self.last_heartbeat = std::time::Instant::now();
