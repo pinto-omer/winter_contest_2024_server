@@ -183,6 +183,12 @@ async fn handle_udp(
 
                         if parsed_key == key {
                             state.set_client_player(id, parsed_entity);
+                            match tx.send((parsed_key, parsed_entity)).await {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    println!("UDP({id}): Encountered error trying to send data to sender. {}",e.to_string());
+                                }
+                            }
                         }
                     }
                     _ => {
