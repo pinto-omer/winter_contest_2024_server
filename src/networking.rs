@@ -4,7 +4,7 @@ use super::game_components::Entity;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 pub struct Client {
     id: u32,
@@ -16,18 +16,21 @@ pub struct Client {
 }
 
 pub struct ServerState {
-    clients: Arc<Mutex<HashMap<u32, Client>>>, // Shared client list
-    current_connections: AtomicUsize,          // Current connection count
-    max_connections: usize,                    // Maximum allowed connections
+    clients: Arc<RwLock<HashMap<u32, Client>>>, // Shared client list
+    current_connections: AtomicUsize,           // Current connection count
+    max_connections: usize,                     // Maximum allowed connections
 }
 
 impl ServerState {
     pub fn new(max_connections: usize) -> Self {
         Self {
-            clients: Arc::new(Mutex::new(HashMap::new())),
+            clients: Arc::new(RwLock::new(HashMap::new())),
             current_connections: AtomicUsize::new(0),
             max_connections,
         }
+    }
+    pub fn get_clients(&self) -> Arc<RwLock<HashMap<u32, Client>>> {
+        self.clients.clone()
     }
 
     pub fn can_accept_new_client(&self) -> bool {
@@ -35,7 +38,7 @@ impl ServerState {
     }
 
     pub fn check_client_exists(&self, id: u32) -> bool {
-        if let Some(_) = self.clients.lock().unwrap().get(&id) {
+        if let Some(_) = self.clients.read().unwrap().get(&id) {
             true
         } else {
             false
@@ -44,7 +47,7 @@ impl ServerState {
 
     pub fn get_client_id_by_key(&self, key: &str) -> Option<u32> {
         self.clients
-            .lock()
+            .read()
             .unwrap()
             .values()
             .filter(|c| c.key == key)
@@ -54,7 +57,7 @@ impl ServerState {
 
     pub fn add_client(&self, id: u32, client: Client) -> bool {
         if self.can_accept_new_client() {
-            self.clients.lock().unwrap().insert(id, client);
+            self.clients.write().unwrap().insert(id, client);
             self.current_connections.fetch_add(1, Ordering::Relaxed);
             true
         } else {
@@ -63,19 +66,19 @@ impl ServerState {
     }
 
     pub fn remove_client(&self, id: u32) {
-        if self.clients.lock().unwrap().remove(&id).is_some() {
+        if self.clients.write().unwrap().remove(&id).is_some() {
             self.current_connections.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
     pub fn client_heartbeat(&self, id: u32) {
-        if let Some(client) = self.clients.lock().unwrap().get_mut(&id) {
+        if let Some(client) = self.clients.write().unwrap().get_mut(&id) {
             client.update_heartbeat();
         }
     }
 
     pub fn get_client_player(&self, id: u32) -> Option<Entity> {
-        if let Some(client) = self.clients.lock().unwrap().get_mut(&id) {
+        if let Some(client) = self.clients.read().unwrap().get(&id) {
             Some(client.get_player())
         } else {
             None
@@ -83,7 +86,7 @@ impl ServerState {
     }
 
     pub fn set_client_player(&self, id: u32, player: Entity) -> bool {
-        if let Some(client) = self.clients.lock().unwrap().get_mut(&id) {
+        if let Some(client) = self.clients.write().unwrap().get_mut(&id) {
             client.set_player(player);
             true
         } else {
@@ -92,11 +95,11 @@ impl ServerState {
     }
 
     pub fn get_client_udp_addr(&self, id: u32) -> Option<SocketAddr> {
-        self.clients.lock().unwrap().get(&id).unwrap().udp_address
+        self.clients.read().unwrap().get(&id).unwrap().udp_address
     }
 
     pub fn set_client_udp_addr(&self, id: u32, udp_address: SocketAddr) -> bool {
-        match self.clients.lock() {
+        match self.clients.write() {
             Ok(mut clients) => {
                 let client = clients.get_mut(&id).unwrap();
                 match client.udp_address {
@@ -136,7 +139,9 @@ impl Client {
     pub fn get_key(&self) -> &str {
         &self.key[..]
     }
-
+    pub fn get_address(&self) -> SocketAddr {
+        self.address.clone()
+    }
     fn update_heartbeat(&mut self) {
         self.last_heartbeat = std::time::Instant::now();
     }

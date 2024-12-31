@@ -1,9 +1,12 @@
 use game_components::{Entity, Float3};
 use networking::{Client, ServerState};
+use std::collections::HashMap;
 use std::error::Error;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::timeout;
 
@@ -14,10 +17,13 @@ pub async fn test_server() -> std::io::Result<()> {
     let server_state = Arc::new(networking::ServerState::new(8));
     println!("server listening on port 8080");
     let clone_state = server_state.clone();
+    let (tx, mut rx) = mpsc::channel(100);
 
     // handle tcp connections
+    let tx_clone = tx.clone();
     let tcp_handle = task::spawn(async move {
         loop {
+            let tx = tx_clone.clone();
             let state = clone_state.clone();
             if let Ok((mut socket, addr)) = tcp_listener.accept().await {
                 task::spawn(async move {
@@ -42,7 +48,8 @@ pub async fn test_server() -> std::io::Result<()> {
                             }
                         }
                         // Handle TCP communication here
-                        let _thread_error = handle_tcp_client(&mut socket, id, state).await;
+                        let _thread_error =
+                            handle_tcp_client(&mut socket, id, state, tx.clone()).await;
                     } else {
                         println!("Rejected connection from {} (server full)", addr);
                         // Optionally send a rejection message
@@ -53,18 +60,29 @@ pub async fn test_server() -> std::io::Result<()> {
     });
 
     // handle udp connections
-    let udp_listener = UdpSocket::bind("127.0.0.1:8080").await?;
-
+    let udp_socket = Arc::new(UdpSocket::bind("127.0.0.1:8080").await?);
+    let udp_listener = udp_socket.clone();
+    let udp_sender = udp_socket.clone();
+    let tx_clone = tx.clone();
     let clone_state = server_state.clone();
     let udp_handle = task::spawn({
         async move {
-            let state = clone_state.clone();
-            handle_udp(udp_listener, state).await;
+            let state = clone_state;
+            handle_udp(udp_listener, state, tx_clone).await;
         }
     });
+    let clone_state = server_state.clone();
 
+    let udp_sender_handle = task::spawn({
+        async move {
+            let state = clone_state;
+
+            let _thread_error = send_updates(rx, udp_sender, state).await;
+        }
+    });
     tcp_handle.await?;
     udp_handle.await?;
+    udp_sender_handle.await?;
     Ok(())
 }
 
@@ -72,6 +90,7 @@ async fn handle_tcp_client(
     socket: &mut TcpStream,
     id: u32,
     state: Arc<ServerState>,
+    _tx: mpsc::Sender<(String, Entity)>, // future need?
 ) -> Result<(), Box<dyn Error>> {
     // Handle client logic
     println!("Handling TCP client ID {}", id);
@@ -118,12 +137,16 @@ async fn handle_tcp_client(
     }
 }
 
-async fn handle_udp(socket: UdpSocket, state: Arc<ServerState>) {
+async fn handle_udp(
+    socket: Arc<UdpSocket>,
+    state: Arc<ServerState>,
+    tx: mpsc::Sender<(String, Entity)>,
+) {
     let mut buf = [0; 1024];
 
     loop {
         if let Ok((_size, addr)) = socket.recv_from(&mut buf).await {
-            println!("UDP Packet received from {}", addr);
+            //println!("UDP Packet received from {}", addr);
             let key = String::from_utf8_lossy(&buf[..7]);
             if let Some(id) = state.get_client_id_by_key(&key) {
                 if let Some(address) = state.get_client_udp_addr(id) {
@@ -175,6 +198,38 @@ async fn handle_udp(socket: UdpSocket, state: Arc<ServerState>) {
     }
 }
 
+async fn send_updates(
+    mut rx: mpsc::Receiver<(String, Entity)>,
+    socket: Arc<UdpSocket>,
+    state: Arc<ServerState>,
+) -> Result<(), Box<dyn Error>> {
+    loop {
+        if let Some((key, player)) = rx.recv().await {
+            let mut addresses: Vec<SocketAddr> = Vec::new();
+            {
+                addresses.append(
+                    &mut state
+                        .get_clients()
+                        .read()
+                        .unwrap()
+                        .values()
+                        .filter(|client| client.get_key() != key)
+                        .map(|client| client.get_address())
+                        .collect(),
+                )
+            }
+            for addr in addresses {
+                socket
+                    .send_to(&le_bytes_from_player_entity(&key, player), addr)
+                    .await?;
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
 fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity) {
     let key = String::from_utf8_lossy(&bytes[..7]).try_into().unwrap();
     let new_player = Entity {
@@ -198,6 +253,34 @@ fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity)
     };
     (key, new_player)
 }
+
+fn le_bytes_from_player_entity(key: &str, player: Entity) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::from(1_u32.to_le_bytes()); // player header
+    let mut key = String::from(key).into_bytes();
+
+    bytes.append(&mut key);
+    for _ in [0..key.len()] {
+        // 4 Bytes alignment
+        bytes.push(0);
+    }
+
+    bytes.append(&mut Vec::from(player.pos.0.to_le_bytes()));
+    bytes.append(&mut Vec::from(player.pos.1.to_le_bytes()));
+    bytes.append(&mut Vec::from(player.pos.2.to_le_bytes()));
+
+    bytes.append(&mut Vec::from(player.rot.0.to_le_bytes()));
+    bytes.append(&mut Vec::from(player.rot.1.to_le_bytes()));
+    bytes.append(&mut Vec::from(player.rot.2.to_le_bytes()));
+
+    bytes.append(&mut Vec::from(player.scl.0.to_le_bytes()));
+    bytes.append(&mut Vec::from(player.scl.1.to_le_bytes()));
+    bytes.append(&mut Vec::from(player.scl.2.to_le_bytes()));
+
+    bytes.append(&mut Vec::from(player.spd.to_le_bytes()));
+
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     //use super::*;
