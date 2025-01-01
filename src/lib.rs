@@ -1,9 +1,9 @@
 use game_components::{Entity, Float3};
 use networking::{Client, ServerState};
-use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
@@ -17,7 +17,7 @@ pub async fn test_server() -> std::io::Result<()> {
     let server_state = Arc::new(networking::ServerState::new(8));
     println!("server listening on port 8080");
     let clone_state = server_state.clone();
-    let (tx, mut rx) = mpsc::channel(100);
+    let (tx, rx) = mpsc::channel(100);
 
     // handle tcp connections
     let tx_clone = tx.clone();
@@ -284,7 +284,13 @@ fn le_bytes_from_player_entity(key: &str, player: Entity) -> Vec<u8> {
     bytes.append(&mut Vec::from(player.scl.2.to_le_bytes()));
 
     bytes.append(&mut Vec::from(player.spd.to_le_bytes()));
-
+    bytes.append(&mut Vec::from(
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f32()
+            .to_le_bytes(),
+    ));
     bytes
 }
 
