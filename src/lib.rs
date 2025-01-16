@@ -11,7 +11,7 @@ use tokio::task::{self};
 use tokio::time::timeout;
 
 mod game_components;
-mod networking;
+pub mod networking;
 pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<()> {
     let tcp_listener = TcpListener::bind("127.0.0.1:8080").await?;
     let server_state = Arc::new(networking::ServerState::new(8));
