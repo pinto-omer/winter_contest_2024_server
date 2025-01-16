@@ -6,6 +6,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
+pub mod database_handler;
+
 pub struct Client {
     id: u32,
     address: SocketAddr,
