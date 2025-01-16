@@ -6,55 +6,66 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::mpsc;
-use tokio::task;
+use tokio::sync::{mpsc, broadcast};
+use tokio::task::{self};
 use tokio::time::timeout;
 
 mod game_components;
 mod networking;
-pub async fn test_server() -> std::io::Result<()> {
+pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<()> {
     let tcp_listener = TcpListener::bind("127.0.0.1:8080").await?;
     let server_state = Arc::new(networking::ServerState::new(8));
     println!("server listening on port 8080");
     let clone_state = server_state.clone();
     let (tx, rx) = mpsc::channel(100);
-
     // handle tcp connections
     let tx_clone = tx.clone();
+    let shutdown_rx = shutdown.resubscribe();
     let tcp_handle = task::spawn(async move {
         loop {
-            let tx = tx_clone.clone();
-            let state = clone_state.clone();
-            if let Ok((mut socket, addr)) = tcp_listener.accept().await {
-                task::spawn(async move {
-                    if state.can_accept_new_client() {
-                        let mut id = 0;
-                        while state.check_client_exists(id) {
-                            id += 1;
-                        }
+            let mut shutdown = shutdown_rx.resubscribe();
+            tokio::select! {
+                _ = shutdown.recv() => {
+                    println!("Shutting down tcp handling...");
+                    break;
+                }
+                Ok((mut socket, addr)) = tcp_listener.accept() => {
+                    let shutdown_rxx = shutdown_rx.resubscribe();
+                    let tx = tx_clone.clone();
+                    let state = clone_state.clone();
+                    
+                        task::spawn(async move {
+                            if state.can_accept_new_client() {
+                                let mut id = 0;
+                                while state.check_client_exists(id) {
+                                    id += 1;
+                                }
 
-                        let client = Client::new(id, addr, std::time::Instant::now());
-                        let key = String::from(client.get_key());
-                        state.add_client(id, client);
-                        println!("Accepted connection from {}", addr);
-                        let _ = socket.writable().await;
+                                let client = Client::new(id, addr, std::time::Instant::now());
+                                let key = String::from(client.get_key());
+                                state.add_client(id, client);
+                                println!("Accepted connection from {}", addr);
+                                let _ = socket.writable().await;
 
-                        println!("key as bytes:{:?}", key.as_bytes());
-                        match socket.try_write(key.as_bytes()) {
-                            Ok(_) => {}
-                            Err(_) => {
-                                state.remove_client(id);
-                                return;
+                                println!("key as bytes:{:?}", key.as_bytes());
+                                match socket.try_write(key.as_bytes()) {
+                                    Ok(_) => {}
+                                    Err(_) => {
+                                        state.remove_client(id);
+                                        return;
+                                    }
+                                }
+
+                                // Handle TCP communication here
+                                let _thread_error =
+                                    handle_tcp_client(&mut socket, id, state, tx.clone(),shutdown_rxx).await;
+                            } else {
+                                println!("Rejected connection from {} (server full)", addr);
+                                // Optionally send a rejection message
                             }
-                        }
-                        // Handle TCP communication here
-                        let _thread_error =
-                            handle_tcp_client(&mut socket, id, state, tx.clone()).await;
-                    } else {
-                        println!("Rejected connection from {} (server full)", addr);
-                        // Optionally send a rejection message
-                    }
-                });
+                        });
+                    
+                }
             }
         }
     });
@@ -64,25 +75,35 @@ pub async fn test_server() -> std::io::Result<()> {
     let udp_listener = udp_socket.clone();
     let udp_sender = udp_socket.clone();
     let tx_clone = tx.clone();
+    let shutdown_rx = shutdown.resubscribe();
     let clone_state = server_state.clone();
     let udp_handle = task::spawn({
         async move {
             let state = clone_state;
-            handle_udp(udp_listener, state, tx_clone).await;
+            handle_udp(udp_listener, state, tx_clone,shutdown_rx).await;
         }
     });
     let clone_state = server_state.clone();
+    let shutdown_rx = shutdown.resubscribe();
 
     let udp_sender_handle = task::spawn({
         async move {
             let state = clone_state;
 
-            let _thread_error = send_updates(rx, udp_sender, state).await;
+            let _thread_error = send_updates(rx, udp_sender, state,shutdown_rx).await;
         }
     });
+
+
     tcp_handle.await?;
+    println!("finished tcp handling");
+
     udp_handle.await?;
+    println!("finished udp handling");
+
     udp_sender_handle.await?;
+    println!("finished sending");
+
     Ok(())
 }
 
@@ -91,149 +112,181 @@ async fn handle_tcp_client(
     id: u32,
     state: Arc<ServerState>,
     _tx: mpsc::Sender<(String, Entity)>, // future need?
+    mut shutdown: broadcast::Receiver<()>
 ) -> Result<(), Box<dyn Error>> {
     // Handle client logic
     println!("Handling TCP client ID {}", id);
 
     loop {
-        match timeout(std::time::Duration::from_secs(20), socket.readable()).await {
-            Ok(val) => val,
-            Err(e) => {
-                println!("session timed out");
-                let _ = socket.shutdown().await;
-                state.remove_client(id);
-                return Err(e.into());
+        tokio::select! {
+            _ = shutdown.recv() => {
+                println!("Shutting down tcp handling...");
+                break;
             }
-        }?;
-
-        let mut buf = vec![0; 1024];
-
-        match socket.try_read(&mut buf) {
-            Ok(n) => {
-                if n > 0 {
-                    println!("TCP({id}): read {} bytes", n);
-                    println!(
-                        "TCP({id}): received data: {:#?}",
-                        String::from_utf8_lossy(&buf[..n])
-                    );
-                } else {
-                    println!("connection closed");
-                    state.remove_client(id);
-                    return Ok(());
+            _ = tokio::time::sleep(tokio::time::Duration::from_nanos(1)) => {
+                match timeout(std::time::Duration::from_secs(20), socket.readable()).await {
+                    Ok(val) => val,
+                    Err(e) => {
+                        println!("session timed out");
+                        let _ = socket.shutdown().await;
+                        state.remove_client(id);
+                        return Err(e.into());
+                    }
+                }?;
+        
+                let mut buf = vec![0; 1024];
+        
+                match socket.try_read(&mut buf) {
+                    Ok(n) => {
+                        if n > 0 {
+                            println!("TCP({id}): read {} bytes", n);
+                            println!(
+                                "TCP({id}): received data: {:#?}",
+                                String::from_utf8_lossy(&buf[..n])
+                            );
+                        } else {
+                            println!("connection closed");
+                            state.remove_client(id);
+                            return Ok(());
+                        }
+                    }
+                    Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
+                        continue;
+                    }
+                    Err(e) => {
+                        println!(
+                            "TCP: received the following error from client {id}: {}",
+                            e.to_string()
+                        );
+                        state.remove_client(id);
+                        return Err(e.into());
+                    }
                 }
-            }
-            Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
-                continue;
-            }
-            Err(e) => {
-                println!(
-                    "TCP: received the following error from client {id}: {}",
-                    e.to_string()
-                );
-                state.remove_client(id);
-                return Err(e.into());
             }
         }
     }
+    
+    Ok(())
 }
 
 async fn handle_udp(
     socket: Arc<UdpSocket>,
     state: Arc<ServerState>,
     tx: mpsc::Sender<(String, Entity)>,
+    mut shutdown: broadcast::Receiver<()>,
+
 ) {
     let mut buf = [0; 1024];
 
     loop {
-        if let Ok((_size, addr)) = socket.recv_from(&mut buf).await {
-            //println!("UDP Packet received from {}", addr);
-            let key = String::from_utf8_lossy(&buf[..7]);
-            if let Some(id) = state.get_client_id_by_key(&key) {
-                if let Some(address) = state.get_client_udp_addr(id) {
-                    if address != addr {
-                        println!(
-                            "UDP({id}):received address doesn't match saved address: {address}"
-                        );
-                        state.remove_client(id);
-                        break;
-                    }
-                } else {
-                    if !state.set_client_udp_addr(id, addr) {
-                        println!(
-                            "UDP({id}):failed to set client udp address due to mutex acquisition failure"
-                        );
-                        state.remove_client(id);
-                        break;
-                    } else {
-                        println!("UDP({id}):registered client address {addr}");
-                    }
-                }
-                let packet_type = u32::from_le_bytes(buf[7..11].try_into().unwrap());
-                //println!("UDP({id}): Key Data: {key}");
-                match packet_type {
-                    1 => {
-                        let player = state.get_client_player(id).unwrap();
-                        let (parsed_key, parsed_entity) =
-                            player_entity_from_le_bytes(&buf[11..], player);
-                        //println!(
-                        //    "Received player packet. parsed key: {parsed_key}, key equals? {:?},\n entity: {:?}",
-                        //    parsed_key == key,
-                        //    parsed_entity
-                        //);
-
-                        if parsed_key == key {
-                            state.set_client_player(id, parsed_entity);
-                            match tx.send((parsed_key, parsed_entity)).await {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    println!("UDP({id}): Encountered error trying to send data to sender. {}",e.to_string());
-                                }
+        tokio::select! {
+            _ = shutdown.recv() => {
+                println!("Shutting down udp handling...");
+                break;
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_nanos(1)) => {
+                if let Ok((_size, addr)) = socket.recv_from(&mut buf).await {
+                    //println!("UDP Packet received from {}", addr);
+                    let key = String::from_utf8_lossy(&buf[..7]);
+                    if let Some(id) = state.get_client_id_by_key(&key) {
+                        if let Some(address) = state.get_client_udp_addr(id) {
+                            if address != addr {
+                                println!(
+                                    "UDP({id}):received address doesn't match saved address: {address}"
+                                );
+                                state.remove_client(id);
+                                break;
+                            }
+                        } else {
+                            if !state.set_client_udp_addr(id, addr) {
+                                println!(
+                                    "UDP({id}):failed to set client udp address due to mutex acquisition failure"
+                                );
+                                state.remove_client(id);
+                                break;
+                            } else {
+                                println!("UDP({id}):registered client address {addr}");
                             }
                         }
-                    }
-                    _ => {
-                        println!("Unknown packet type. Packet raw data: {:?}", &buf[7..]);
+                        let packet_type = u32::from_le_bytes(buf[7..11].try_into().unwrap());
+                        //println!("UDP({id}): Key Data: {key}");
+                        match packet_type {
+                            1 => {
+                                let player = state.get_client_player(id).unwrap();
+                                let (parsed_key, parsed_entity) =
+                                    player_entity_from_le_bytes(&buf[11..], player);
+                                //println!(
+                                //    "Received player packet. parsed key: {parsed_key}, key equals? {:?},\n entity: {:?}",
+                                //    parsed_key == key,
+                                //    parsed_entity
+                                //);
+
+                                if parsed_key == key {
+                                    state.set_client_player(id, parsed_entity);
+                                    match tx.send((parsed_key, parsed_entity)).await {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            println!("UDP({id}): Encountered error trying to send data to sender. {}",e.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                println!("Unknown packet type. Packet raw data: {:?}", &buf[7..]);
+                            }
+                        }
+
+                        // Handle existing client packet
+
+                        state.client_heartbeat(id);
                     }
                 }
-
-                // Handle existing client packet
-
-                state.client_heartbeat(id);
             }
         }
     }
+
 }
 
 async fn send_updates(
     mut rx: mpsc::Receiver<(String, Entity)>,
     socket: Arc<UdpSocket>,
     state: Arc<ServerState>,
+    mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn Error>> {
     loop {
-        if let Some((key, player)) = rx.recv().await {
-            let mut addresses: Vec<SocketAddr> = Vec::new();
-            {
-                addresses.append(
-                    &mut state
-                        .get_clients()
-                        .read()
-                        .unwrap()
-                        .values()
-                        .filter(|client| client.get_key() != key)
-                        .map(|client| client.get_udp_address())
-                        .collect(),
-                )
+        tokio::select! {
+            _ = shutdown.recv() => {
+                println!("Shutting down udp sender...");
+                break;
             }
-            for addr in addresses {
-                println!("Sending {:?} to {addr}", player);
-                socket
-                    .send_to(&le_bytes_from_player_entity(&key, player), addr)
-                    .await?;
+            _ = tokio::time::sleep(tokio::time::Duration::from_nanos(1)) => {
+                if let Some((key, player)) = rx.recv().await {
+                    let mut addresses: Vec<SocketAddr> = Vec::new();
+                    {
+                        addresses.append(
+                            &mut state
+                                .get_clients()
+                                .read()
+                                .unwrap()
+                                .values()
+                                .filter(|client| client.get_key() != key)
+                                .map(|client| client.get_udp_address())
+                                .collect(),
+                        )
+                    }
+                    for addr in addresses {
+                        println!("Sending {:?} to {addr}", player);
+                        socket
+                            .send_to(&le_bytes_from_player_entity(&key, player), addr)
+                            .await?;
+                    }
+                } else {
+                    break;
+                }
             }
-        } else {
-            break;
         }
     }
+
     Ok(())
 }
 
