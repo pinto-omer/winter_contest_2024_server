@@ -1,8 +1,12 @@
-pub mod database_handler {
     use mysql_async;
     use mysql_async::prelude::*;
     use sha2::{Digest, Sha256};
     use rand::Rng;
+
+
+	const DATABASE_URL : &str = "mysql://game_user:game_password@localhost:3306/game_db";
+
+
     #[derive(Debug)]
     pub enum AuthError {
         UserNotFound,
@@ -17,8 +21,8 @@ pub mod database_handler {
     }
 
     pub async fn check_user_login(username: &str, pass: &str) -> Result<bool, AuthError> {
-        let database_url = "mysql://game_user:game_password@localhost:3306/game_db";
-        let pool = mysql_async::Pool::new(database_url);
+       
+        let pool = mysql_async::Pool::new(DATABASE_URL);
         let mut conn = pool.get_conn().await?;
 
         let query = r"SELECT salt,password from users where username = :username";
@@ -43,8 +47,7 @@ pub mod database_handler {
     }
 
     pub async fn create_user(username: &str, pass: &str) -> Result<(), AuthError> {
-        let database_url = "mysql://game_user:game_password@localhost:3306/game_db";
-        let pool = mysql_async::Pool::new(database_url);
+        let pool = mysql_async::Pool::new(DATABASE_URL);
         let mut conn = pool.get_conn().await?;
         let mut hasher = Sha256::new();
 
@@ -60,7 +63,7 @@ pub mod database_handler {
         hasher.update(pass);
         hasher.update(salt);
         let hashed_pass = hasher.finalize();
-        let query = r"INSERT INTO users values(:username,:hashed_pass,:salt,:username,0,0)";
+        let query = r"INSERT INTO users values(:username,:hashed_pass,:salt,:username,0)";
         conn.exec_drop(
             query,
             params! {
@@ -72,4 +75,19 @@ pub mod database_handler {
 
         Ok(())
     }
-}
+
+	pub async fn add_exp(username:&str,amount:u32) -> Result<(), AuthError> {
+		let pool = mysql_async::Pool::new(DATABASE_URL);
+        let mut conn = pool.get_conn().await?;
+
+		let query = r"update users set exp = exp + :amount where username=:username";
+        conn.exec_drop(
+            query,
+            params! {
+				"amount" => amount,
+				"username" => username,
+			}
+        )
+        .await?;
+		Ok(())
+	}
