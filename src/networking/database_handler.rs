@@ -2,7 +2,7 @@ pub mod database_handler {
     use mysql_async;
     use mysql_async::prelude::*;
     use sha2::{Digest, Sha256};
-
+    use rand::Rng;
     #[derive(Debug)]
     pub enum AuthError {
         UserNotFound,
@@ -48,7 +48,15 @@ pub mod database_handler {
         let mut conn = pool.get_conn().await?;
         let mut hasher = Sha256::new();
 
-        let salt = Sha256::digest([username, pass].concat());
+        // let salt = Sha256::digest([ &std::time::SystemTime::now()
+        // .duration_since(std::time::UNIX_EPOCH)
+        // .unwrap().as_nanos().to_le_bytes(),
+        // username.as_bytes()].concat());
+
+
+        let mut rng = rand::rngs::OsRng;
+        let mut salt = [0u8; 32]; // 32 bytes salt
+        rng.fill(&mut salt);
         hasher.update(pass);
         hasher.update(salt);
         let hashed_pass = hasher.finalize();
@@ -56,9 +64,9 @@ pub mod database_handler {
         conn.exec_drop(
             query,
             params! {
-                    "username" => username,
-                "hashed_pass" => hashed_pass.as_slice(),
-            "salt" => salt.as_slice()},
+				"username" => username,
+				"hashed_pass" => hashed_pass.as_slice(),
+				"salt" => salt.as_slice()},
         )
         .await?;
 
