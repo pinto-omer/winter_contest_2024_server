@@ -1,0 +1,18 @@
+version: '3.9'
+services:
+  mysql:
+    image: mysql:8.0.40
+    container_name: my_game_database
+    environment:
+      MYSQL_ROOT_PASSWORD: your_root_password
+      MYSQL_DATABASE: game_db
+      MYSQL_USER: game_user
+      MYSQL_PASSWORD: game_password
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+
+volumes:
+  db_data:
+    driver: local
