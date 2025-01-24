@@ -19,7 +19,9 @@ async fn main() {
             "quit" => {
                 println!("Quitting...");
                 // Signal the server to shut down
-                let _ = shutdown_tx.send(());
+                if let Ok(receivers) = shutdown_tx.send(()) {
+                    println!("sent quit message to {} receivers",receivers);
+                }
                 break;
             }
             line if command.starts_with("auth") => {

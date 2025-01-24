@@ -41,7 +41,7 @@ pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<
                                     id += 1;
                                 }
 
-                                let client = Client::new(id, addr, std::time::Instant::now());
+                                let client = Client::new(id, std::time::Instant::now());
                                 let key = String::from(client.get_key());
                                 state.add_client(id, client);
                                 println!("Accepted connection from {}", addr);
@@ -80,7 +80,8 @@ pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<
     let udp_handle = task::spawn({
         async move {
             let state = clone_state;
-            handle_udp(udp_listener, state, tx_clone,shutdown_rx).await;
+            let shutdown = shutdown_rx.resubscribe();
+            handle_udp(udp_listener, state, tx_clone,shutdown).await;
         }
     });
     let clone_state = server_state.clone();
@@ -144,6 +145,9 @@ async fn handle_tcp_client(
                                 "TCP({id}): received data: {:#?}",
                                 String::from_utf8_lossy(&buf[..n])
                             );
+                            if state.get_client_username(id).is_empty() {
+                                
+                            }
                         } else {
                             println!("connection closed");
                             state.remove_client(id);

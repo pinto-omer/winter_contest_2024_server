@@ -10,7 +10,7 @@ pub mod database_handler;
 
 pub struct Client {
     id: u32,
-    address: SocketAddr,
+    username: String,
     udp_address: Option<SocketAddr>,
     last_heartbeat: std::time::Instant,
     key: String,
@@ -99,7 +99,16 @@ impl ServerState {
     pub fn get_client_udp_addr(&self, id: u32) -> Option<SocketAddr> {
         self.clients.read().unwrap().get(&id).unwrap().udp_address
     }
+    pub fn get_client_username(&self, id:u32) -> String {
+        String::from(self.clients.read().unwrap().get(&id).unwrap().username.as_str())
+    }
 
+    pub fn set_client_username(&self, id: u32, username: &str) {
+        if let Ok(mut clients) = self.clients.write() {
+            let client = clients.get_mut(&id).unwrap();
+            client.set_username(username);
+        }
+    }
     pub fn set_client_udp_addr(&self, id: u32, udp_address: SocketAddr) -> bool {
         match self.clients.write() {
             Ok(mut clients) => {
@@ -120,12 +129,12 @@ impl ServerState {
 }
 
 impl Client {
-    pub fn new(id: u32, address: SocketAddr, last_heartbeat: std::time::Instant) -> Self {
+    pub fn new(id: u32, last_heartbeat: std::time::Instant) -> Self {
         let mut key = String::from("client");
         key.push_str(&id.to_string()[..]);
         Client {
             id,
-            address: address,
+            username: String::from(""),
             last_heartbeat,
             key,
             udp_address: None,
@@ -156,5 +165,12 @@ impl Client {
 
     fn set_player(&mut self, player: Entity) {
         self.player = player;
+    }
+    fn get_username(&self) -> &str {
+        self.username.as_str()
+    }
+
+    fn set_username(&mut self, username: &str) {
+        self.username = String::from(username);
     }
 }
