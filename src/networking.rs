@@ -126,6 +126,14 @@ impl ServerState {
             }
         }
     }
+
+    pub fn reset_client_udp_address(&self, id: u32) {
+        if let Ok(mut clients) = self.clients.write() {
+            clients.get_mut(&id).unwrap().clear_udp();
+        } else {
+            panic!("failed to acquire lock to reset client {id}'s udp address")
+        }
+    }
 }
 
 impl Client {
@@ -150,10 +158,9 @@ impl Client {
     pub fn get_key(&self) -> &str {
         &self.key[..]
     }
-    pub fn get_udp_address(&self) -> SocketAddr {
+    pub fn get_udp_address(&self) -> Option<SocketAddr> {
         self.udp_address
             .clone()
-            .expect("no udp address was available")
     }
     fn update_heartbeat(&mut self) {
         self.last_heartbeat = std::time::Instant::now();
@@ -166,11 +173,21 @@ impl Client {
     fn set_player(&mut self, player: Entity) {
         self.player = player;
     }
-    fn get_username(&self) -> &str {
+    pub fn get_username(&self) -> &str {
         self.username.as_str()
     }
 
     fn set_username(&mut self, username: &str) {
         self.username = String::from(username);
+    }
+    fn clear_udp(&mut self) {
+        self.udp_address = None;
+    }
+
+    pub fn duration_since_heartbeat(&self) -> u64 {
+        match std::time::Instant::now().checked_duration_since(self.last_heartbeat) {
+            Some(dur) => {dur.as_secs()},
+            None => {u64::MAX},
+        }
     }
 }

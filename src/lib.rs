@@ -1,4 +1,5 @@
 use game_components::{Entity, Float3};
+use networking::database_handler::AuthError;
 use networking::{Client, ServerState};
 use std::error::Error;
 use std::net::SocketAddr;
@@ -146,7 +147,38 @@ async fn handle_tcp_client(
                                 String::from_utf8_lossy(&buf[..n])
                             );
                             if state.get_client_username(id).is_empty() {
-                                
+                                let string_res = String::from_utf8_lossy(&buf);
+                                let mut iter = string_res.split_whitespace();
+                                if let Some(username) = iter.next()   {
+                                    if let Some(password) = iter.next() {
+                                match networking::database_handler::check_user_login(username, password).await {
+                                    Ok(_) => { 
+                                            socket.write(&i32::to_le_bytes(1)).await?;
+                                            state.set_client_username(id, username);
+                                    }
+                                    Err(e) => {
+                                       match e {
+                                            AuthError::DatabaseError(err) => {
+                                                println!("failed to connect to database {:?}",err.to_string());
+                                                {socket.write(&i32::to_le_bytes(2)).await?;}
+                                        }
+                                           AuthError::PasswordMismatch => {socket.write(&i32::to_le_bytes(0)).await?;}
+                                           AuthError::UserNotFound => {
+                                            match networking::database_handler::create_user(username,password).await {
+                                                Ok(_) =>  {socket.write(&i32::to_le_bytes(1)).await?;
+                                                state.set_client_username(id, username);}
+                                                Err(_) => {socket.write(&i32::to_le_bytes(2)).await?;}
+                                            }
+                                           }
+                                       }
+                                    }
+                                    }
+                                }else {
+                                    socket.write(&i32::to_le_bytes(3)).await?;
+                                }
+                            }else {
+                                socket.write(&i32::to_le_bytes(3)).await?;
+                            }
                             }
                         } else {
                             println!("connection closed");
@@ -234,6 +266,7 @@ async fn handle_udp(
                                         }
                                     }
                                 }
+                                state.client_heartbeat(id);
                             }
                             _ => {
                                 println!("Unknown packet type. Packet raw data: {:?}", &buf[7..]);
@@ -241,8 +274,7 @@ async fn handle_udp(
                         }
 
                         // Handle existing client packet
-
-                        state.client_heartbeat(id);
+                        
                     }
                 }
             }
@@ -273,8 +305,8 @@ async fn send_updates(
                                 .read()
                                 .unwrap()
                                 .values()
-                                .filter(|client| client.get_key() != key)
-                                .map(|client| client.get_udp_address())
+                                .filter(|client| client.get_key() != key && client.duration_since_heartbeat() < 5)
+                                .filter_map(|client| client.get_udp_address())
                                 .collect(),
                         )
                     }
@@ -314,6 +346,7 @@ fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity)
         ),
         spd: f32::from_le_bytes(bytes[44..48].try_into().unwrap()),
         max_spd: player.max_spd,
+
     };
     (key, new_player)
 }
