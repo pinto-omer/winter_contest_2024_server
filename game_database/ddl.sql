@@ -1,4 +1,4 @@
-CREATE TABLE `users` (
+CREATE TABLE `game_db`.`users` (
    `username` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
    `password` binary(32) NOT NULL,
    `salt` binary(32) NOT NULL,
@@ -7,7 +7,8 @@ CREATE TABLE `users` (
    UNIQUE KEY `username` (`username`)
  );
 
- CREATE VIEW `user_levels` AS 
+ CREATE VIEW `game_db`.`user_levels` AS 
  select `users`.`username` AS `username`,
- MIN((`users`.`exp` DIV 5),50) AS `level` 
- from `users`;
+ (`users`.`exp` DIV 5) AS `level` 
+ from `game_db`.`users`;
+ 

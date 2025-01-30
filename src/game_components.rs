@@ -1,7 +1,7 @@
 #[derive(Copy, Clone, Debug)]
 pub struct Float3(pub f32, pub f32, pub f32);
 #[derive(Copy, Clone, Debug)]
-pub struct Float4(pub f32, pub f32, pub f32, pub f32);
+pub struct _Float4(pub f32, pub f32, pub f32, pub f32);
 
 #[derive(Copy, Clone, Debug)]
 pub struct Entity {
