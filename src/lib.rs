@@ -13,7 +13,7 @@ use tokio::time::timeout;
 
 mod game_components;
 pub mod networking;
-pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<()> {
+pub async fn test_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Result<()> {
     let tcp_listener = TcpListener::bind("127.0.0.1:8080").await?;
     let server_state = Arc::new(networking::ServerState::new(8));
     println!("server listening on port 8080");
@@ -21,7 +21,8 @@ pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<
     let (tx, rx) = mpsc::channel(100);
     // handle tcp connections
     let tx_clone = tx.clone();
-    let shutdown_rx = shutdown.resubscribe();
+    let (shutdown_tx,_) = broadcast::channel(1);
+    let shutdown_rx = shutdown_tx.subscribe();
     let tcp_handle = task::spawn(async move {
         loop {
             let mut shutdown = shutdown_rx.resubscribe();
@@ -76,12 +77,12 @@ pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<
     let udp_listener = udp_socket.clone();
     let udp_sender = udp_socket.clone();
     let tx_clone = tx.clone();
-    let shutdown_rx = shutdown.resubscribe();
+    let shutdown_rx = shutdown_tx.subscribe();
     let clone_state = server_state.clone();
     let udp_handle = task::spawn({
         async move {
             let state = clone_state;
-            let shutdown = shutdown_rx.resubscribe();
+            let shutdown = shutdown_rx;
             handle_udp(udp_listener, state, tx_clone,shutdown).await;
         }
     });
@@ -96,7 +97,8 @@ pub async fn test_server(shutdown : broadcast::Receiver<()>) -> std::io::Result<
         }
     });
 
-
+    let _ = shutdown.recv().await;
+    let _ = shutdown_tx.send(());
     tcp_handle.await?;
     println!("finished tcp handling");
 
@@ -224,8 +226,7 @@ async fn handle_udp(
                 println!("Shutting down udp handling...");
                 break;
             }
-            _ = tokio::time::sleep(tokio::time::Duration::from_nanos(1)) => {
-                if let Ok((_size, addr)) = socket.recv_from(&mut buf).await {
+            result = socket.recv_from(&mut buf) => if let Ok((_size, addr)) = result {
                     //println!("UDP Packet received from {}", addr);
                     let key = String::from_utf8_lossy(&buf[..7]);
                     if let Some(id) = state.get_client_id_by_key(&key) {
@@ -280,8 +281,10 @@ async fn handle_udp(
                         // Handle existing client packet
                         
                     }
+                } else {
+                    break;
                 }
-            }
+            
         }
     }
 
@@ -299,8 +302,7 @@ async fn send_updates(
                 println!("Shutting down udp sender...");
                 break;
             }
-            _ = tokio::time::sleep(tokio::time::Duration::from_nanos(1)) => {
-                if let Some((key, player)) = rx.recv().await {
+            result = rx.recv() => if let Some((key, player)) = result {
                     let mut addresses: Vec<SocketAddr> = Vec::new();
                     {
                         addresses.append(
@@ -322,10 +324,9 @@ async fn send_updates(
                     }
                 } else {
                     break;
-                }
+                } 
             }
         }
-    }
 
     Ok(())
 }
