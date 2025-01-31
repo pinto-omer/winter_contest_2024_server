@@ -134,6 +134,15 @@ impl ServerState {
             panic!("failed to acquire lock to reset client {id}'s udp address")
         }
     }
+
+    pub fn check_user_logged_in(&self, username: &str) -> bool {
+        self.clients
+            .read()
+            .unwrap()
+            .values()
+            .filter(|c| c.username == username)
+            .count() > 0
+    }
 }
 
 impl Client {

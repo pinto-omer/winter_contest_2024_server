@@ -153,8 +153,12 @@ async fn handle_tcp_client(
                                     if let Some(password) = iter.next() {
                                 match networking::database_handler::check_user_login(username, password).await {
                                     Ok(_) => { 
-                                            socket.write(&i32::to_le_bytes(1)).await?;
-                                            state.set_client_username(id, username);
+                                            if state.check_user_logged_in(username) {
+                                                socket.write(&i32::to_le_bytes(3)).await?;
+                                            } else {
+                                                socket.write(&i32::to_le_bytes(1)).await?;
+                                                state.set_client_username(id, username);
+                                            }
                                     }
                                     Err(e) => {
                                        match e {
