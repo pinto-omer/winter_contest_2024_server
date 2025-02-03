@@ -1,3 +1,4 @@
+//! handling all the behind-the-scenes server logic
 use game_components::{Entity, Float3};
 use networking::database_handler::AuthError;
 use networking::{Client, ServerState};
@@ -13,6 +14,8 @@ use tokio::time::timeout;
 
 mod game_components;
 pub mod networking;
+
+
 
 /// function that handles all the main server functionality
 /// 
@@ -134,6 +137,14 @@ pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
     Ok(())
 }
 
+/// function that handles a single tcp client's connection
+/// 
+/// # Arguments
+/// - `socket` the TcpStream socket for the connection being handled
+/// - `id` the client id assosciated with this socket
+/// - `state` a thread-safe copy of the server state
+/// - `_tx` a mpsc producer that might get used for future needs to pass messages to other threads
+/// - `shutdown` a broadcast receiver for graceful shutdown messages
 async fn handle_tcp_client(
     socket: &mut TcpStream,
     id: u32,
@@ -150,17 +161,7 @@ async fn handle_tcp_client(
                 println!("Shutting down tcp handling...");
                 break;
             }
-            _ = tokio::time::sleep(tokio::time::Duration::from_nanos(1)) => {
-                match timeout(std::time::Duration::from_secs(20), socket.readable()).await {
-                    Ok(val) => val,
-                    Err(e) => {
-                        println!("session timed out");
-                        let _ = socket.shutdown().await;
-                        state.remove_client(id);
-                        return Err(e.into());
-                    }
-                }?;
-        
+            result = timeout(std::time::Duration::from_secs(20), socket.readable()) => if let Ok(_) = result {
                 let mut buf = vec![0; 1024];
         
                 match socket.try_read(&mut buf) {
@@ -227,6 +228,12 @@ async fn handle_tcp_client(
                         return Err(e.into());
                     }
                 }
+            }
+            else if let Err(e) = result {
+                println!("session timed out");
+                let _ = socket.shutdown().await;
+                state.remove_client(id);
+                return Err(e.into());
             }
         }
     }
