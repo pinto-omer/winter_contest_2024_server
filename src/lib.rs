@@ -245,6 +245,13 @@ async fn handle_tcp_client(
     Ok(())
 }
 
+/// function that handles all incoming udp connections
+/// 
+/// # Arguments
+/// - `socket` thread-safe reference of the bound udp socket
+/// - `state` thread-safe reference of the server state
+/// - `tx` mpsc producer to send messages to other threads
+/// - `shutdown` broadcast receiver to receive graceful shutdown requests 
 async fn handle_udp(
     socket: Arc<UdpSocket>,
     state: Arc<ServerState>,
@@ -256,16 +263,20 @@ async fn handle_udp(
 
     loop {
         tokio::select! {
-            _ = shutdown.recv() => {
+            _ = shutdown.recv() => { // graceful shutdown
                 println!("Shutting down udp handling...");
                 break;
             }
+            // await UDP messages
             result = socket.recv_from(&mut buf) => if let Ok((_size, addr)) = result {
                     //println!("UDP Packet received from {}", addr);
+                    // first portion of the message should be the 8-byte key
                     let key = String::from_utf8_lossy(&buf[..7]);
-                    if let Some(id) = state.get_client_id_by_key(&key) {
-                        if let Some(address) = state.get_client_udp_addr(id) {
-                            if address != addr {
+                    if let Some(id) = state.get_client_id_by_key(&key) { // check that a client with this key exists
+                        if let Some(address) = state.get_client_udp_addr(id) { // check whether said client has a registered UDP address
+                            if address != addr { 
+                                // if the registered address doesn't match the received address invalidate client
+                                // to consider: just ignore the message without invalidating so it isn't abused to DC others.
                                 println!(
                                     "UDP({id}):received address doesn't match saved address: {address}"
                                 );
@@ -283,10 +294,11 @@ async fn handle_udp(
                                 println!("UDP({id}):registered client address {addr}");
                             }
                         }
+                        // after key comes packet type
                         let packet_type = u32::from_le_bytes(buf[7..11].try_into().unwrap());
                         //println!("UDP({id}): Key Data: {key}");
                         match packet_type {
-                            1 => {
+                            1 => { // player data type 
                                 let player = state.get_client_player(id).unwrap();
                                 let (parsed_key, parsed_entity) =
                                     player_entity_from_le_bytes(&buf[11..], player);
@@ -296,24 +308,21 @@ async fn handle_udp(
                                 //    parsed_entity
                                 //);
 
-                                if parsed_key == key {
-                                    state.set_client_player(id, parsed_entity);
-                                    match tx.send((parsed_key, parsed_entity)).await {
+                                if parsed_key == key { // check that the key inside the player data matches the key sent with the packet
+                                    state.set_client_player(id, parsed_entity); // update server state
+                                    match tx.send((parsed_key, parsed_entity)).await { // send the new player data to be handled by the sending thread
                                         Ok(_) => {}
                                         Err(e) => {
                                             println!("UDP({id}): Encountered error trying to send data to sender. {}",e.to_string());
                                         }
                                     }
                                 }
-                                state.client_heartbeat(id);
+                                state.client_heartbeat(id); // update the UDP heartbeat
                             }
                             _ => {
                                 println!("Unknown packet type. Packet raw data: {:?}", &buf[7..]);
                             }
-                        }
-
-                        // Handle existing client packet
-                        
+                        }                        
                     }
                 } else {
                     break;
@@ -323,6 +332,8 @@ async fn handle_udp(
     }
 
 }
+
+
 
 async fn send_updates(
     mut rx: mpsc::Receiver<(String, Entity)>,
