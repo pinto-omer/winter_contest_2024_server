@@ -334,7 +334,12 @@ async fn handle_udp(
 }
 
 
-
+/// function that handles sending UDP updates to all clients with active UDP connection
+/// 
+/// # Arguments
+/// - `rx` mpsc consumer to receive messages from other threads
+/// - `socket` thread-safe copy of bound udp socket
+/// - `shutdown` broadcast receiver for graceful shutdown
 async fn send_updates(
     mut rx: mpsc::Receiver<(String, Entity)>,
     socket: Arc<UdpSocket>,
@@ -347,9 +352,10 @@ async fn send_updates(
                 println!("Shutting down udp sender...");
                 break;
             }
+            // if the received message is player information
             result = rx.recv() => if let Some((key, player)) = result {
                     let mut addresses: Vec<SocketAddr> = Vec::new();
-                    {
+                    { // add all the UDP addresses from the server state that: arent't the sender, have had a heartbeat less than 5 seconds ago
                         addresses.append(
                             &mut state
                                 .get_clients()
@@ -361,7 +367,7 @@ async fn send_updates(
                                 .collect(),
                         )
                     }
-                    for addr in addresses {
+                    for addr in addresses { // send the player data to all the above addresses
                         println!("Sending {:?} to {addr}", player);
                         socket
                             .send_to(&le_bytes_from_player_entity(&key, player), addr)
@@ -376,6 +382,13 @@ async fn send_updates(
     Ok(())
 }
 
+
+/// parses raw bytes packet to player entity
+/// 
+/// # Returns
+/// - `(String, Entity)`
+///     - String - the key extracted from the packet information
+///     - Entity - the player data entity extracted from the packet information
 fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity) {
     let key = String::from_utf8_lossy(&bytes[..7]).try_into().unwrap();
     let new_player = Entity {
@@ -401,6 +414,7 @@ fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity)
     (key, new_player)
 }
 
+/// converts player entity to raw bytes (in little endian) to be sent to clients
 fn le_bytes_from_player_entity(key: &str, player: Entity) -> Vec<u8> {
     let mut bytes: Vec<u8> = Vec::from(1_u32.to_le_bytes()); // player header
     let mut key = String::from(key).into_bytes();
@@ -436,6 +450,7 @@ fn le_bytes_from_player_entity(key: &str, player: Entity) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    //! to be implemented
     //use super::*;
 
     // #[test]
