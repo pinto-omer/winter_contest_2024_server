@@ -13,18 +13,36 @@ use tokio::time::timeout;
 
 mod game_components;
 pub mod networking;
-pub async fn test_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Result<()> {
+
+/// function that handles all the main server functionality
+/// 
+/// # Arguments
+/// 
+/// * `shutdown` - a mutable broadcast receiver channel for receiving a graceful shutdown command from CLI
+/// 
+/// # Returns
+///   -  `Ok(())`    if running finished gracefully
+///   -  `Error(e)` otherwise
+pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Result<()> {
+    // bind tcp listener to localhost port 8080
+    // TODO: make IP and port configureable
     let tcp_listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    // init server state in thread-safe type
+    // TODO: Make max connections configureable
     let server_state = Arc::new(networking::ServerState::new(8));
     println!("server listening on port 8080");
+
     let clone_state = server_state.clone();
+
+    // multi-produce single-consume transciever and receiver for collating data from multiple clients for the sender thread
     let (tx, rx) = mpsc::channel(100);
     // handle tcp connections
-    let tx_clone = tx.clone();
+    let tx_clone = tx.clone(); // clone to be moved to new threads so that original transciever isn't consumed
     let (shutdown_tx,_) = broadcast::channel(1);
     let shutdown_rx = shutdown_tx.subscribe();
     let tcp_handle = task::spawn(async move {
-        loop {
+        loop { // await incoming tcp connections or graceful shutdown command
             let mut shutdown = shutdown_rx.resubscribe();
             tokio::select! {
                 _ = shutdown.recv() => {
@@ -35,37 +53,42 @@ pub async fn test_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
                     let shutdown_rxx = shutdown_rx.resubscribe();
                     let tx = tx_clone.clone();
                     let state = clone_state.clone();
-                    
-                        task::spawn(async move {
-                            if state.can_accept_new_client() {
-                                let mut id = 0;
-                                while state.check_client_exists(id) {
-                                    id += 1;
-                                }
-
-                                let client = Client::new(id, std::time::Instant::now());
-                                let key = String::from(client.get_key());
-                                state.add_client(id, client);
-                                println!("Accepted connection from {}", addr);
-                                let _ = socket.writable().await;
-
-                                println!("key as bytes:{:?}", key.as_bytes());
-                                match socket.try_write(key.as_bytes()) {
-                                    Ok(_) => {}
-                                    Err(_) => {
-                                        state.remove_client(id);
-                                        return;
-                                    }
-                                }
-
-                                // Handle TCP communication here
-                                let _thread_error =
-                                    handle_tcp_client(&mut socket, id, state, tx.clone(),shutdown_rxx).await;
-                            } else {
-                                println!("Rejected connection from {} (server full)", addr);
-                                // Optionally send a rejection message
+                    // spawn a new task that'll be in charge of handling this tcp connection
+                    task::spawn(async move { 
+                        if state.can_accept_new_client() { // first, confirm that server didn't reached the configured max clients
+                            let mut id = 0;
+                            // check in serial order what the first free address is
+                            // TO CONSIDER: adding this as a parameter to server state, adding client number and raising that before finding new id to prevent data races
+                            while state.check_client_exists(id) { 
+                                id += 1;
                             }
-                        });
+
+                            // create new client with the previous id and add it to the server state
+                            let client = Client::new(id, std::time::Instant::now());
+                            let key = String::from(client.get_key());
+                            state.add_client(id, client);
+                            println!("Accepted connection from {}", addr);
+
+                            // wait for the socket to be writeable and send the key to the client.
+                            let _ = socket.writable().await; 
+
+                            println!("key as bytes:{:?}", key.as_bytes());
+                            match socket.try_write(key.as_bytes()) {
+                                Ok(_) => {}
+                                Err(_) => { // if failed to send for any reason remove the client and close the connection
+                                    state.remove_client(id);
+                                    return;
+                                }
+                            }
+
+                            // Handle TCP communication here
+                            let _thread_error =
+                                handle_tcp_client(&mut socket, id, state, tx.clone(),shutdown_rxx).await;
+                        } else {
+                            println!("Rejected connection from {} (server full)", addr);
+                            // Optionally send a rejection message
+                        }
+                    });
                     
                 }
             }
@@ -79,7 +102,7 @@ pub async fn test_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
     let tx_clone = tx.clone();
     let shutdown_rx = shutdown_tx.subscribe();
     let clone_state = server_state.clone();
-    let udp_handle = task::spawn({
+    let udp_handle = task::spawn({ // spawn a task to handle all incoming udp
         async move {
             let state = clone_state;
             let shutdown = shutdown_rx;
@@ -89,7 +112,7 @@ pub async fn test_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
     let clone_state = server_state.clone();
     let shutdown_rx = shutdown.resubscribe();
 
-    let udp_sender_handle = task::spawn({
+    let udp_sender_handle = task::spawn({ // spawn a task to handle sending information to connected clients
         async move {
             let state = clone_state;
 
@@ -97,8 +120,8 @@ pub async fn test_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
         }
     });
 
-    let _ = shutdown.recv().await;
-    let _ = shutdown_tx.send(());
+    let _ = shutdown.recv().await; // wait for graceful shutdown transmission
+    let _ = shutdown_tx.send(()); // pass the shutdown command along to the various threads
     tcp_handle.await?;
     println!("finished tcp handling");
 

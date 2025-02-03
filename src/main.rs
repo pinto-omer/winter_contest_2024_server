@@ -1,11 +1,11 @@
-use game_server::{networking::database_handler::{add_exp, AuthError}, test_server};
+use game_server::{networking::database_handler::{add_exp, AuthError}, main_server};
 use std::io::{self, Write};
 use tokio::{sync::broadcast, task};
 #[tokio::main]
 async fn main() {
     let (shutdown_tx, _) = broadcast::channel(1);
-
-    let server = task::spawn(test_server(shutdown_tx.subscribe()));
+    // spawn main server thread
+    let server = task::spawn(main_server(shutdown_tx.subscribe()));
     let mut last_user : String = String::new();
     // CLI loop
     loop {
@@ -16,7 +16,7 @@ async fn main() {
         let command = input.trim();
 
         match command {
-            "quit" => {
+            "quit" => { // quit the program
                 println!("Quitting...");
                 // Signal the server to shut down
                 if let Ok(receivers) = shutdown_tx.send(()) {
@@ -24,7 +24,7 @@ async fn main() {
                 }
                 break;
             }
-            line if command.starts_with("auth") => {
+            line if command.starts_with("auth") => { // authenticate command for manual user info editing
                 let args: Vec<&str> = line.split(' ').collect();
                 if args.len() != 3 {
                     println!("Unknown command: {}", command);
@@ -49,7 +49,7 @@ async fn main() {
 					}
                 }
             }
-            line if command.starts_with("addxp") => {
+            line if command.starts_with("addxp") => { // manually add (or subtract) experience from last auth user
                 let args: Vec<&str> = line.split(' ').collect();
                 if args.len() != 2 {
                     println!("addxp accepts only 1 argument, got: {}", command);
