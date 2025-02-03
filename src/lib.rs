@@ -152,15 +152,16 @@ async fn handle_tcp_client(
     _tx: mpsc::Sender<(String, Entity)>, // future need?
     mut shutdown: broadcast::Receiver<()>
 ) -> Result<(), Box<dyn Error>> {
-    // Handle client logic
     println!("Handling TCP client ID {}", id);
 
     loop {
         tokio::select! {
-            _ = shutdown.recv() => {
+            _ = shutdown.recv() => { // graceful shutdown branch
                 println!("Shutting down tcp handling...");
                 break;
             }
+            // wait for messages to reach the socket. if none arrive in 20 seconds - assume timeout
+            // TODO: make timeout duration configurable
             result = timeout(std::time::Duration::from_secs(20), socket.readable()) => if let Ok(_) = result {
                 let mut buf = vec![0; 1024];
         
@@ -172,15 +173,16 @@ async fn handle_tcp_client(
                                 "TCP({id}): received data: {:#?}",
                                 String::from_utf8_lossy(&buf[..n])
                             );
-                            if state.get_client_username(id).is_empty() {
+                            // check if client already logged in, if not - expect message to be login info and attempt login
+                            if state.get_client_username(id).is_empty() { 
                                 let string_res = String::from_utf8_lossy(&buf);
                                 let mut iter = string_res.split_whitespace();
                                 if let Some(username) = iter.next()   {
                                     if let Some(password) = iter.next() {
-                                match networking::database_handler::check_user_login(username, password).await {
+                                match networking::database_handler::check_user_login(username, password).await { // attempt login
                                     Ok(_) => { 
                                             if state.check_user_logged_in(username) {
-                                                socket.write(&i32::to_le_bytes(3)).await?;
+                                                socket.write(&i32::to_le_bytes(4)).await?;
                                             } else {
                                                 socket.write(&i32::to_le_bytes(1)).await?;
                                                 state.set_client_username(id, username);
@@ -193,7 +195,7 @@ async fn handle_tcp_client(
                                                 {socket.write(&i32::to_le_bytes(2)).await?;}
                                         }
                                            AuthError::PasswordMismatch => {socket.write(&i32::to_le_bytes(0)).await?;}
-                                           AuthError::UserNotFound => {
+                                           AuthError::UserNotFound => { // if user does not exist, attempt to create it
                                             match networking::database_handler::create_user(username,password).await {
                                                 Ok(_) =>  {socket.write(&i32::to_le_bytes(1)).await?;
                                                 state.set_client_username(id, username);}
@@ -203,22 +205,24 @@ async fn handle_tcp_client(
                                        }
                                     }
                                     }
-                                }else {
+                                }else { // did not receive username or password.
                                     socket.write(&i32::to_le_bytes(3)).await?;
                                 }
                             }else {
                                 socket.write(&i32::to_le_bytes(3)).await?;
                             }
                             }
-                        } else {
+                        } else { // received EOF from socket
                             println!("connection closed");
                             state.remove_client(id);
                             return Ok(());
                         }
                     }
+                     // message has arrived but stream isn't ready to be read so continue
                     Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
                         continue;
                     }
+                    // elavate unexpected error
                     Err(e) => {
                         println!(
                             "TCP: received the following error from client {id}: {}",
