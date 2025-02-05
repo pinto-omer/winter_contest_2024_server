@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 
 pub mod database_handler;
 
+/// stores a single client's data
 pub struct Client {
     id: u32,
     username: String,
@@ -17,6 +18,7 @@ pub struct Client {
     player: Entity,
 }
 
+/// stores connected clients, and their amount
 pub struct ServerState {
     clients: Arc<RwLock<HashMap<u32, Client>>>, // Shared client list
     current_connections: AtomicUsize,           // Current connection count
@@ -47,6 +49,10 @@ impl ServerState {
         }
     }
 
+    /// return the id of the client associated with the given key or None if no such client is found
+    /// 
+   /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn get_client_id_by_key(&self, key: &str) -> Option<u32> {
         self.clients
             .read()
@@ -57,6 +63,13 @@ impl ServerState {
             .next()
     }
 
+    /// adds a client to the server state
+    /// 
+    /// # Returns
+    /// `true` on succes, `false` if the server state can not accept any new clients at this time
+    /// 
+    /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn add_client(&self, id: u32, client: Client) -> bool {
         if self.can_accept_new_client() {
             self.clients.write().unwrap().insert(id, client);
@@ -67,18 +80,28 @@ impl ServerState {
         }
     }
 
+    /// removes the client that has the id `id` if it exists. 
+    /// 
+    /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn remove_client(&self, id: u32) {
         if self.clients.write().unwrap().remove(&id).is_some() {
             self.current_connections.fetch_sub(1, Ordering::Relaxed);
         }
     }
-
+    /// updates the udp heartbeat of the client that has the id `id` to now
+    ///  
+    /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn client_heartbeat(&self, id: u32) {
         if let Some(client) = self.clients.write().unwrap().get_mut(&id) {
             client.update_heartbeat();
         }
     }
 
+    /// get the client's associated Player `Entity` if it exists
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn get_client_player(&self, id: u32) -> Option<Entity> {
         if let Some(client) = self.clients.read().unwrap().get(&id) {
             Some(client.get_player())
@@ -87,6 +110,9 @@ impl ServerState {
         }
     }
 
+    /// sets the client's associated Player `Entity` to `player` if client with id `id` exists
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn set_client_player(&self, id: u32, player: Entity) -> bool {
         if let Some(client) = self.clients.write().unwrap().get_mut(&id) {
             client.set_player(player);
@@ -96,45 +122,69 @@ impl ServerState {
         }
     }
 
+    /// gets client's UDP address, or None if it/the client don't exist
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn get_client_udp_addr(&self, id: u32) -> Option<SocketAddr> {
-        self.clients.read().unwrap().get(&id).unwrap().udp_address
-    }
-    pub fn get_client_username(&self, id:u32) -> String {
-        String::from(self.clients.read().unwrap().get(&id).unwrap().username.as_str())
+        if let Some(client) = self.clients.read().unwrap().get(&id) {
+            client.udp_address
+        } else {
+            None
+        }
     }
 
+    /// gets the client's username if client exists, or empty string otherwise
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
+    pub fn get_client_username(&self, id:u32) -> String {
+        if let Some(client) = self.clients.read().unwrap().get(&id) {
+            String::from(client.username.as_str())
+        } else {
+            String::from("")
+        }
+    }
+
+    /// sets the client's username if client exists
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn set_client_username(&self, id: u32, username: &str) {
-        if let Ok(mut clients) = self.clients.write() {
-            let client = clients.get_mut(&id).unwrap();
+        if let Some(client) = self.clients.write().unwrap().get_mut(&id) {
             client.set_username(username);
         }
     }
+
+     /// sets the client's UDP address if client exists and doesn't have one.
+     /// 
+     /// # Returns
+     ///   - `true` if successfully set
+     ///   - `false` otherwise
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn set_client_udp_addr(&self, id: u32, udp_address: SocketAddr) -> bool {
-        match self.clients.write() {
-            Ok(mut clients) => {
-                let client = clients.get_mut(&id).unwrap();
-                match client.udp_address {
-                    Some(_) => false,
-                    None => {
-                        client.udp_address = Some(udp_address);
-                        true
-                    }
-                }
+        if let Some(client) = self.clients.write().unwrap().get_mut(&id) {
+            if client.udp_address.is_some() {
+                false
+            } else {
+                client.udp_address = Some(udp_address);
+                true
             }
-            Err(_) => {
-                panic!("could not acquire lock");
-            }
-        }
-    }
-
-    pub fn reset_client_udp_address(&self, id: u32) {
-        if let Ok(mut clients) = self.clients.write() {
-            clients.get_mut(&id).unwrap().clear_udp();
         } else {
-            panic!("failed to acquire lock to reset client {id}'s udp address")
+            false
         }
     }
 
+     /// resets the client's username if client exists
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
+    pub fn reset_client_udp_address(&self, id: u32) {
+        if let Some(client) = self.clients.write().unwrap().get_mut(&id) {
+            client.clear_udp();
+        }
+    }
+
+    /// checks whether `username` is associated with any active clients 
+       /// # Panics
+    /// if the `clients`' `RwLock` is poisoned
     pub fn check_user_logged_in(&self, username: &str) -> bool {
         self.clients
             .read()
@@ -164,12 +214,14 @@ impl Client {
             },
         }
     }
+    /// gets a string slice of this client's key
     pub fn get_key(&self) -> &str {
         &self.key[..]
     }
-    pub fn get_udp_address(&self) -> Option<SocketAddr> {
-        self.udp_address
-            .clone()
+
+    /// gets a clone of this client's udp address if it exists
+    pub fn get_udp_address(&self) -> Option<&SocketAddr> {
+        self.udp_address.as_ref()
     }
     fn update_heartbeat(&mut self) {
         self.last_heartbeat = std::time::Instant::now();

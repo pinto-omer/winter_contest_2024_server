@@ -363,7 +363,11 @@ async fn send_updates(
                                 .unwrap()
                                 .values()
                                 .filter(|client| client.get_key() != key && client.duration_since_heartbeat() < 5)
-                                .filter_map(|client| client.get_udp_address())
+                                .filter_map(|client| 
+                                    {
+                                    if let Some(address) = client.get_udp_address() {
+                                        Some(*address)
+                                    } else{ None}})
                                 .collect(),
                         )
                     }
@@ -418,9 +422,10 @@ fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity)
 fn le_bytes_from_player_entity(key: &str, player: Entity) -> Vec<u8> {
     let mut bytes: Vec<u8> = Vec::from(1_u32.to_le_bytes()); // player header
     let mut key = String::from(key).into_bytes();
+    let align = 4 - key.len() % 4; // used for 4-bytes alignment
 
     bytes.append(&mut key);
-    for _ in [0..key.len()] {
+    for _ in 0..align {
         // 4 Bytes alignment
         bytes.push(0);
     }
