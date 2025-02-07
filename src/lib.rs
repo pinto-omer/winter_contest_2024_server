@@ -455,7 +455,7 @@ fn le_bytes_from_player_entity(key: &str, player: Entity) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    //! to be implemented
+    //! TO BE IMPLEMENTED
     //use super::*;
 
     // #[test]

@@ -223,28 +223,38 @@ impl Client {
     pub fn get_udp_address(&self) -> Option<&SocketAddr> {
         self.udp_address.as_ref()
     }
+
+    /// updates the client heartbeat to `Instant::now`
     fn update_heartbeat(&mut self) {
         self.last_heartbeat = std::time::Instant::now();
     }
 
+    /// gets the client's Player `Entity`
     fn get_player(&self) -> Entity {
         self.player
     }
 
+    /// overrides the player's `Entity` with the argument's
     fn set_player(&mut self, player: Entity) {
         self.player = player;
     }
+
+    /// gets the client's associated username
     pub fn get_username(&self) -> &str {
         self.username.as_str()
     }
 
+    /// sets the client's associated username
     fn set_username(&mut self, username: &str) {
         self.username = String::from(username);
     }
+
+    /// drops the client's saved UDP socket
     fn clear_udp(&mut self) {
         self.udp_address = None;
     }
 
+    /// calculate the duration in seconds between the last heart beat and `Instant::now`
     pub fn duration_since_heartbeat(&self) -> u64 {
         match std::time::Instant::now().checked_duration_since(self.last_heartbeat) {
             Some(dur) => {dur.as_secs()},
