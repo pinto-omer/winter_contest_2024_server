@@ -8,25 +8,23 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::{mpsc, broadcast};
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::{self};
 use tokio::time::timeout;
 
 mod game_components;
 pub mod networking;
 
-
-
 /// function that handles all the main server functionality
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `shutdown` - a mutable broadcast receiver channel for receiving a graceful shutdown command from CLI
-/// 
+///
 /// # Returns
 ///   -  `Ok(())`    if running finished gracefully
 ///   -  `Error(e)` otherwise
-pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Result<()> {
+pub async fn main_server(mut shutdown: broadcast::Receiver<()>) -> std::io::Result<()> {
     // bind tcp listener to localhost port 8080
     // TODO: make IP and port configureable
     let tcp_listener = TcpListener::bind("127.0.0.1:8080").await?;
@@ -42,10 +40,11 @@ pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
     let (tx, rx) = mpsc::channel(100);
     // handle tcp connections
     let tx_clone = tx.clone(); // clone to be moved to new threads so that original transciever isn't consumed
-    let (shutdown_tx,_) = broadcast::channel(1);
+    let (shutdown_tx, _) = broadcast::channel(1);
     let shutdown_rx = shutdown_tx.subscribe();
     let tcp_handle = task::spawn(async move {
-        loop { // await incoming tcp connections or graceful shutdown command
+        loop {
+            // await incoming tcp connections or graceful shutdown command
             let mut shutdown = shutdown_rx.resubscribe();
             tokio::select! {
                 _ = shutdown.recv() => {
@@ -57,12 +56,12 @@ pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
                     let tx = tx_clone.clone();
                     let state = clone_state.clone();
                     // spawn a new task that'll be in charge of handling this tcp connection
-                    task::spawn(async move { 
+                    task::spawn(async move {
                         if state.can_accept_new_client() { // first, confirm that server didn't reached the configured max clients
                             let mut id = 0;
                             // check in serial order what the first free address is
                             // TO CONSIDER: adding this as a parameter to server state, adding client number and raising that before finding new id to prevent data races
-                            while state.check_client_exists(id) { 
+                            while state.check_client_exists(id) {
                                 id += 1;
                             }
 
@@ -73,7 +72,7 @@ pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
                             println!("Accepted connection from {}", addr);
 
                             // wait for the socket to be writeable and send the key to the client.
-                            let _ = socket.writable().await; 
+                            let _ = socket.writable().await;
 
                             println!("key as bytes:{:?}", key.as_bytes());
                             match socket.try_write(key.as_bytes()) {
@@ -92,7 +91,7 @@ pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
                             // Optionally send a rejection message
                         }
                     });
-                    
+
                 }
             }
         }
@@ -105,21 +104,23 @@ pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
     let tx_clone = tx.clone();
     let shutdown_rx = shutdown_tx.subscribe();
     let clone_state = server_state.clone();
-    let udp_handle = task::spawn({ // spawn a task to handle all incoming udp
+    let udp_handle = task::spawn({
+        // spawn a task to handle all incoming udp
         async move {
             let state = clone_state;
             let shutdown = shutdown_rx;
-            handle_udp(udp_listener, state, tx_clone,shutdown).await;
+            handle_udp(udp_listener, state, tx_clone, shutdown).await;
         }
     });
     let clone_state = server_state.clone();
     let shutdown_rx = shutdown.resubscribe();
 
-    let udp_sender_handle = task::spawn({ // spawn a task to handle sending information to connected clients
+    let udp_sender_handle = task::spawn({
+        // spawn a task to handle sending information to connected clients
         async move {
             let state = clone_state;
 
-            let _thread_error = send_updates(rx, udp_sender, state,shutdown_rx).await;
+            let _thread_error = send_updates(rx, udp_sender, state, shutdown_rx).await;
         }
     });
 
@@ -138,7 +139,7 @@ pub async fn main_server(mut shutdown : broadcast::Receiver<()>) -> std::io::Res
 }
 
 /// function that handles a single tcp client's connection
-/// 
+///
 /// # Arguments
 /// - `socket` the TcpStream socket for the connection being handled
 /// - `id` the client id assosciated with this socket
@@ -150,7 +151,7 @@ async fn handle_tcp_client(
     id: u32,
     state: Arc<ServerState>,
     _tx: mpsc::Sender<(String, Entity)>, // future need?
-    mut shutdown: broadcast::Receiver<()>
+    mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn Error>> {
     println!("Handling TCP client ID {}", id);
 
@@ -164,7 +165,7 @@ async fn handle_tcp_client(
             // TODO: make timeout duration configurable
             result = timeout(std::time::Duration::from_secs(20), socket.readable()) => if let Ok(_) = result {
                 let mut buf = vec![0; 1024];
-        
+
                 match socket.try_read(&mut buf) {
                     Ok(n) => {
                         if n > 0 {
@@ -174,43 +175,45 @@ async fn handle_tcp_client(
                                 String::from_utf8_lossy(&buf[..n])
                             );
                             // check if client already logged in, if not - expect message to be login info and attempt login
-                            if state.get_client_username(id).is_empty() { 
+                            if state.get_client_username(id).is_empty() {
                                 let string_res = String::from_utf8_lossy(&buf);
                                 let mut iter = string_res.split_whitespace();
                                 if let Some(username) = iter.next()   {
                                     if let Some(password) = iter.next() {
-                                match networking::database_handler::check_user_login(username, password).await { // attempt login
-                                    Ok(_) => { 
-                                            if state.check_user_logged_in(username) {
-                                                socket.write(&i32::to_le_bytes(4)).await?;
-                                            } else {
-                                                socket.write(&i32::to_le_bytes(1)).await?;
-                                                state.set_client_username(id, username);
+                                        match networking::database_handler::check_user_login(username, password).await { // attempt login
+                                            Ok(_) => {
+                                                if state.check_user_logged_in(username) {
+                                                    socket.write(&i32::to_le_bytes(4)).await?;
+                                                } else {
+                                                    socket.write(&i32::to_le_bytes(1)).await?;
+                                                    state.set_client_username(id, username);
+                                                }
                                             }
-                                    }
-                                    Err(e) => {
-                                       match e {
-                                            AuthError::DatabaseError(err) => {
-                                                println!("failed to connect to database {:?}",err.to_string());
-                                                {socket.write(&i32::to_le_bytes(2)).await?;}
+                                            Err(e) => {
+                                                match e {
+                                                    AuthError::DatabaseError(err) => {
+                                                        println!("failed to connect to database {:?}",err.to_string());
+                                                        {socket.write(&i32::to_le_bytes(2)).await?;}
+                                                    }
+                                                    AuthError::PasswordMismatch => {socket.write(&i32::to_le_bytes(0)).await?;}
+                                                    AuthError::UserNotFound => { // if user does not exist, attempt to create it
+                                                        match networking::database_handler::create_user(username,password).await {
+                                                            Ok(_) =>  {socket.write(&i32::to_le_bytes(1)).await?;
+                                                            state.set_client_username(id, username);}
+                                                            Err(_) => {socket.write(&i32::to_le_bytes(2)).await?;}
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
-                                           AuthError::PasswordMismatch => {socket.write(&i32::to_le_bytes(0)).await?;}
-                                           AuthError::UserNotFound => { // if user does not exist, attempt to create it
-                                            match networking::database_handler::create_user(username,password).await {
-                                                Ok(_) =>  {socket.write(&i32::to_le_bytes(1)).await?;
-                                                state.set_client_username(id, username);}
-                                                Err(_) => {socket.write(&i32::to_le_bytes(2)).await?;}
-                                            }
-                                           }
-                                       }
+                                    } else { // did not receive username or password.
+                                        socket.write(&i32::to_le_bytes(3)).await?;
                                     }
-                                    }
-                                }else { // did not receive username or password.
+                                } else {
                                     socket.write(&i32::to_le_bytes(3)).await?;
                                 }
-                            }else {
-                                socket.write(&i32::to_le_bytes(3)).await?;
-                            }
+                            } else { // handle non-login packets
+
                             }
                         } else { // received EOF from socket
                             println!("connection closed");
@@ -241,23 +244,22 @@ async fn handle_tcp_client(
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// function that handles all incoming udp connections
-/// 
+///
 /// # Arguments
 /// - `socket` thread-safe reference of the bound udp socket
 /// - `state` thread-safe reference of the server state
 /// - `tx` mpsc producer to send messages to other threads
-/// - `shutdown` broadcast receiver to receive graceful shutdown requests 
+/// - `shutdown` broadcast receiver to receive graceful shutdown requests
 async fn handle_udp(
     socket: Arc<UdpSocket>,
     state: Arc<ServerState>,
     tx: mpsc::Sender<(String, Entity)>,
     mut shutdown: broadcast::Receiver<()>,
-
 ) {
     let mut buf = [0; 1024];
 
@@ -274,7 +276,7 @@ async fn handle_udp(
                     let key = String::from_utf8_lossy(&buf[..7]);
                     if let Some(id) = state.get_client_id_by_key(&key) { // check that a client with this key exists
                         if let Some(address) = state.get_client_udp_addr(id) { // check whether said client has a registered UDP address
-                            if address != addr { 
+                            if address != addr {
                                 // if the registered address doesn't match the received address invalidate client
                                 // to consider: just ignore the message without invalidating so it isn't abused to DC others.
                                 println!(
@@ -298,7 +300,7 @@ async fn handle_udp(
                         let packet_type = u32::from_le_bytes(buf[7..11].try_into().unwrap());
                         //println!("UDP({id}): Key Data: {key}");
                         match packet_type {
-                            1 => { // player data type 
+                            1 => { // player data type
                                 let player = state.get_client_player(id).unwrap();
                                 let (parsed_key, parsed_entity) =
                                     player_entity_from_le_bytes(&buf[11..], player);
@@ -322,20 +324,18 @@ async fn handle_udp(
                             _ => {
                                 println!("Unknown packet type. Packet raw data: {:?}", &buf[7..]);
                             }
-                        }                        
+                        }
                     }
                 } else {
                     break;
                 }
-            
+
         }
     }
-
 }
 
-
 /// function that handles sending UDP updates to all clients with active UDP connection
-/// 
+///
 /// # Arguments
 /// - `rx` mpsc consumer to receive messages from other threads
 /// - `socket` thread-safe copy of bound udp socket
@@ -348,47 +348,46 @@ async fn send_updates(
 ) -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
-            _ = shutdown.recv() => {
-                println!("Shutting down udp sender...");
+        _ = shutdown.recv() => {
+            println!("Shutting down udp sender...");
+            break;
+        }
+        // if the received message is player information
+        result = rx.recv() => if let Some((key, player)) = result {
+                let mut addresses: Vec<SocketAddr> = Vec::new();
+                { // add all the UDP addresses from the server state that: arent't the sender, have had a heartbeat less than 5 seconds ago
+                    addresses.append(
+                        &mut state
+                            .get_clients()
+                            .read()
+                            .unwrap()
+                            .values()
+                            .filter(|client| client.get_key() != key && client.duration_since_heartbeat() < 5)
+                            .filter_map(|client|
+                                {
+                                if let Some(address) = client.get_udp_address() {
+                                    Some(*address)
+                                } else{ None}})
+                            .collect(),
+                    )
+                }
+                for addr in addresses { // send the player data to all the above addresses
+                    println!("Sending {:?} to {addr}", player);
+                    socket
+                        .send_to(&le_bytes_from_player_entity(&key, player), addr)
+                        .await?;
+                }
+            } else {
                 break;
             }
-            // if the received message is player information
-            result = rx.recv() => if let Some((key, player)) = result {
-                    let mut addresses: Vec<SocketAddr> = Vec::new();
-                    { // add all the UDP addresses from the server state that: arent't the sender, have had a heartbeat less than 5 seconds ago
-                        addresses.append(
-                            &mut state
-                                .get_clients()
-                                .read()
-                                .unwrap()
-                                .values()
-                                .filter(|client| client.get_key() != key && client.duration_since_heartbeat() < 5)
-                                .filter_map(|client| 
-                                    {
-                                    if let Some(address) = client.get_udp_address() {
-                                        Some(*address)
-                                    } else{ None}})
-                                .collect(),
-                        )
-                    }
-                    for addr in addresses { // send the player data to all the above addresses
-                        println!("Sending {:?} to {addr}", player);
-                        socket
-                            .send_to(&le_bytes_from_player_entity(&key, player), addr)
-                            .await?;
-                    }
-                } else {
-                    break;
-                } 
-            }
         }
+    }
 
     Ok(())
 }
 
-
 /// parses raw bytes packet to player entity
-/// 
+///
 /// # Returns
 /// - `(String, Entity)`
 ///     - String - the key extracted from the packet information
@@ -413,16 +412,15 @@ fn player_entity_from_le_bytes(bytes: &[u8], player: Entity) -> (String, Entity)
         ),
         spd: f32::from_le_bytes(bytes[44..48].try_into().unwrap()),
         max_spd: player.max_spd,
-
     };
     (key, new_player)
 }
 
 /// converts player entity to raw bytes (in little endian) to be sent to clients
 fn le_bytes_from_player_entity(key: &str, player: Entity) -> Vec<u8> {
-    let mut bytes: Vec<u8> = Vec::from(1_u32.to_le_bytes()); // player header
+    let mut bytes: Vec<u8> = Vec::from((1_u32).to_le_bytes()); // player header
     let mut key = String::from(key).into_bytes();
-    let align = 4 - key.len() % 4; // used for 4-bytes alignment
+    let align = 4 - (key.len() % 4); // used for 4-bytes alignment
 
     bytes.append(&mut key);
     for _ in 0..align {
