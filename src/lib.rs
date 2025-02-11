@@ -1,6 +1,6 @@
 //! handling all the behind-the-scenes server logic
 use game_components::{Entity, Float3};
-use networking::database_handler::AuthError;
+use networking::database_handler::{add_exp, get_exp, AuthError};
 use networking::{Client, ServerState};
 use std::error::Error;
 use std::net::SocketAddr;
@@ -167,19 +167,20 @@ async fn handle_tcp_client(
                 let mut buf = vec![0; 1024];
 
                 match socket.try_read(&mut buf) {
-                    Ok(n) => {
-                        if n > 0 {
-                            println!("TCP({id}): read {} bytes", n);
+                    Ok(bytes) => {
+                        if bytes > 0 {
+                            println!("TCP({id}): read {} bytes", bytes);
                             println!(
                                 "TCP({id}): received data: {:#?}",
-                                String::from_utf8_lossy(&buf[..n])
+                                String::from_utf8_lossy(&buf[..bytes])
                             );
                             // check if client already logged in, if not - expect message to be login info and attempt login
                             if state.get_client_username(id).is_empty() {
                                 let string_res = String::from_utf8_lossy(&buf);
                                 let mut iter = string_res.split_whitespace();
                                 if let Some(username) = iter.next()   {
-                                    if let Some(password) = iter.next() {
+                                    if let Some(mut password) = iter.next() {
+                                        password = password.trim_end_matches('\0');
                                         match networking::database_handler::check_user_login(username, password).await { // attempt login
                                             Ok(_) => {
                                                 if state.check_user_logged_in(username) {
@@ -198,8 +199,10 @@ async fn handle_tcp_client(
                                                     AuthError::PasswordMismatch => {socket.write(&i32::to_le_bytes(0)).await?;}
                                                     AuthError::UserNotFound => { // if user does not exist, attempt to create it
                                                         match networking::database_handler::create_user(username,password).await {
-                                                            Ok(_) =>  {socket.write(&i32::to_le_bytes(1)).await?;
-                                                            state.set_client_username(id, username);}
+                                                            Ok(_) =>  {
+                                                                socket.write(&i32::to_le_bytes(1)).await?;
+                                                                state.set_client_username(id, username);
+                                                            }
                                                             Err(_) => {socket.write(&i32::to_le_bytes(2)).await?;}
                                                         }
                                                     }
@@ -213,7 +216,41 @@ async fn handle_tcp_client(
                                     socket.write(&i32::to_le_bytes(3)).await?;
                                 }
                             } else { // handle non-login packets
+                                let code = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+                                if code == 2 || code == 3 { // exp packets
+                                    // extract the key from the packet and compare it with the client's key
+                                    let key : String = String::from_utf8_lossy(&buf[4..11]).try_into().unwrap();
 
+                                    if let Some(parsed_id) = state.get_client_id_by_key(&key) {
+                                        if id != parsed_id {
+                                            continue;
+                                        }
+                                        if code == 2 {// add exp packet code
+                                            let amount = i32::from_le_bytes(buf[12..16].try_into().unwrap());
+                                            let res = add_exp(&state.get_client_username(id), amount).await;
+                                            let mut msg = Vec::from(i32::to_le_bytes(2));
+                                            match res {
+                                                Ok(_) => {
+                                                    msg.append(&mut Vec::from(amount.to_le_bytes()));
+                                                },
+                                                Err(_) => {
+                                                    msg.append(&mut Vec::from(&i32::to_le_bytes(0)));
+                                                },
+                                            }
+
+                                            socket.write(&msg).await?;
+                                        } else { // get exp packet
+                                            let mut msg = Vec::from(i32::to_le_bytes(3));
+                                            if let Ok(exp) = get_exp(&state.get_client_username(id)).await {
+                                                msg.append(&mut Vec::from(exp.to_le_bytes()));
+                                            } else {
+                                                msg.append(&mut Vec::from(0_i32.to_le_bytes()));
+                                            }
+                                            socket.write(&msg).await?;
+                                        }
+                                    }
+
+                                }
                             }
                         } else { // received EOF from socket
                             println!("connection closed");
